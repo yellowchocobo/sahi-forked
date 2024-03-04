@@ -46,6 +46,7 @@ class ObjectPrediction(ObjectAnnotation):
         category_id: Optional[int] = None,
         category_name: Optional[str] = None,
         bool_mask: Optional[np.ndarray] = None,
+        polygon: Optional[np.ndarray] = None,
         score: Optional[float] = 0,
         shift_amount: Optional[List[int]] = [0, 0],
         full_shape: Optional[List[int]] = None,
@@ -64,6 +65,8 @@ class ObjectPrediction(ObjectAnnotation):
                 Name of the object category
             bool_mask: np.ndarray
                 2D boolean mask array. Should be None if model doesn't output segmentation mask.
+            polygon: np.ndarray
+                2D boolean mask array. Should be None if model doesn't output segmentation mask or store_mask is True.
             shift_amount: list
                 To shift the box and mask predictions from sliced image
                 to full sized image, should be in the form of [shift_x, shift_y]
@@ -76,10 +79,13 @@ class ObjectPrediction(ObjectAnnotation):
             bbox=bbox,
             category_id=category_id,
             bool_mask=bool_mask,
+            polygon=polygon,
             category_name=category_name,
             shift_amount=shift_amount,
             full_shape=full_shape,
         )
+        self.shift_x = shift_amount[0]
+        self.shift_y = shift_amount[1]
 
     def get_shifted_object_prediction(self):
         """
@@ -87,22 +93,27 @@ class ObjectPrediction(ObjectAnnotation):
         Shifts bbox and mask coords.
         Used for mapping sliced predictions over full image.
         """
+        # here I am not saving the bool_mask because of memory issues
+        # but I do save the polygon
         if self.mask:
             return ObjectPrediction(
                 bbox=self.bbox.get_shifted_box().to_xyxy(),
                 category_id=self.category.id,
                 score=self.score.value,
-                bool_mask=self.mask.get_shifted_mask().bool_mask,
+                bool_mask=None, # we do not save the bool_mask (it can be regenerated from the bool_mask)
+                polygon=self.polygon.get_shifted_polygon(),  # shifted polygon
                 category_name=self.category.name,
                 shift_amount=[0, 0],
-                full_shape=self.mask.get_shifted_mask().full_shape,
+                full_shape=None, # this need to go away (before it was called two times! in bool_mask and full_shape)
             )
+
         else:
             return ObjectPrediction(
                 bbox=self.bbox.get_shifted_box().to_xyxy(),
                 category_id=self.category.id,
                 score=self.score.value,
                 bool_mask=None,
+                polygon=None,
                 category_name=self.category.name,
                 shift_amount=[0, 0],
                 full_shape=None,
@@ -148,6 +159,7 @@ class ObjectPrediction(ObjectAnnotation):
         return f"""ObjectPrediction<
     bbox: {self.bbox},
     mask: {self.mask},
+    polygon: {self.polygon}
     score: {self.score},
     category: {self.category}>"""
 

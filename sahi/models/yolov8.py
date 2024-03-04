@@ -2,9 +2,14 @@
 # Code written by AnNT, 2023.
 
 import logging
-from typing import Any, Dict, List, Optional
 
 import numpy as np
+import cv2
+import torch
+
+from typing import Any, Dict, List, Optional
+from sahi.utils.cv import get_bbox_from_bool_mask
+from sahi.utils.polygon import binary_mask_to_polygon
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +59,7 @@ class Yolov8DetectionModel(DetectionModel):
             image: np.ndarray
                 A numpy array that contains the image to be predicted. 3 channel image should be in RGB order.
         """
+        from ultralytics.engine.results import Masks
 
         # Confirm model is loaded
         if self.model is None:
@@ -66,11 +72,34 @@ class Yolov8DetectionModel(DetectionModel):
             prediction_result = self.model(
                 image[:, :, ::-1], verbose=False, device=self.device
             )  # YOLOv8 expects numpy arrays to have BGR
-        prediction_result = [
-            result.boxes.data[result.boxes.data[:, 4] >= self.confidence_threshold] for result in prediction_result
-        ]
+        if self.has_mask:
 
-        self._original_predictions = prediction_result
+            if not prediction_result[0].masks:
+                prediction_result[0].masks = Masks(
+                    torch.tensor([], device=self.model.device), prediction_result[0].boxes.orig_shape
+                )
+
+            # only keep masks for which the confidence threshold of the bounding boxes is over the
+            # confidence threshold. Should be True and False here. Here you can end up with no masks and bounding
+            # boxes if confindence_threshold is very high.
+            prediction_result_ = [
+                (
+                    result.boxes.data[result.boxes.data[:, 4] >= self.confidence_threshold],
+                    result.masks.data[result.boxes.data[:, 4] >= self.confidence_threshold],
+                )
+                for result in prediction_result
+            ]
+
+        else:
+            prediction_result_ = []
+            for result in prediction_result:
+                result_boxes = result.boxes.data[result.boxes.data[:, 4] >= self.confidence_threshold]
+                result_masks = torch.tensor([[] for _ in range(result_boxes.size()[0])])
+                # result_masks = [torch.tensor([], device=self.model.device) for _ in result_boxes]
+                prediction_result_.append((result_boxes, result_masks))
+
+        self._original_predictions = prediction_result_
+        self._original_shape = image.shape
 
     @property
     def category_names(self):
@@ -88,7 +117,7 @@ class Yolov8DetectionModel(DetectionModel):
         """
         Returns if model output contains segmentation mask
         """
-        return False  # fix when yolov5 supports segmentation models
+        return self.model.overrides["task"] == "segment"
 
     def _create_object_prediction_list_from_original_predictions(
         self,
@@ -114,13 +143,18 @@ class Yolov8DetectionModel(DetectionModel):
 
         # handle all predictions
         object_prediction_list_per_image = []
-        for image_ind, image_predictions_in_xyxy_format in enumerate(original_predictions):
+        for image_ind, image_predictions in enumerate(original_predictions):
+
+            image_predictions_in_xyxy_format = image_predictions[0]
+            image_predictions_masks = image_predictions[1]
             shift_amount = shift_amount_list[image_ind]
             full_shape = None if full_shape_list is None else full_shape_list[image_ind]
             object_prediction_list = []
 
             # process predictions
-            for prediction in image_predictions_in_xyxy_format.cpu().detach().numpy():
+            for prediction, bool_mask in zip(
+                image_predictions_in_xyxy_format.cpu().detach().numpy(), image_predictions_masks.cpu().detach().numpy()
+            ):
                 x1 = prediction[0]
                 y1 = prediction[1]
                 x2 = prediction[2]
@@ -129,6 +163,35 @@ class Yolov8DetectionModel(DetectionModel):
                 score = prediction[4]
                 category_id = int(prediction[5])
                 category_name = self.category_mapping[str(category_id)]
+
+                # parse prediction mask
+                if not self.has_mask:
+                    # bool_mask = bool_mask
+                    # check if mask is valid
+                    # https://github.com/obss/sahi/discussions/696
+                    # if get_bbox_from_bool_mask(bool_mask) is None:
+                    #     continue
+                    # else:
+                    bool_mask = None
+                else:
+                    bool_mask = cv2.resize(bool_mask, (self._original_shape[1], self._original_shape[0]))
+                    bool_mask[bool_mask >= 0.5] = 1
+                    bool_mask[bool_mask < 0.5] = 0
+
+                    # get polygon coordinates from mask (I am using try/except because in some cases the pixels
+                    # in the masks are not interconnected. Therefore it results in multiple contours, and it is a mess...
+                    try:
+                        polygon = np.array(binary_mask_to_polygon(bool_mask, tolerance=0)).squeeze()
+                        # I am sometimes getting this error when running the self.polygon.get_shifted_polygon():
+                        # "too many indices for array: array is 1-dimensional, but 2 were indexed"
+                        # I think this is due to very small mask, or only one pixel prediction?
+                        # Here I take only polygons with more than 4 coordinates.
+                        if polygon.shape[0] >= 4:
+                            None
+                        else:
+                            polygon = None
+                    except:
+                        polygon = None
 
                 # fix negative box coords
                 bbox[0] = max(0, bbox[0])
@@ -152,7 +215,8 @@ class Yolov8DetectionModel(DetectionModel):
                     bbox=bbox,
                     category_id=category_id,
                     score=score,
-                    bool_mask=None,
+                    bool_mask=bool_mask,
+                    polygon=polygon,
                     category_name=category_name,
                     shift_amount=shift_amount,
                     full_shape=full_shape,

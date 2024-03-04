@@ -234,7 +234,7 @@ def get_sliced_prediction(
         tqdm.write(f"Performing prediction on {num_slices} number of slices.")
     object_prediction_list = []
     # perform sliced prediction
-    for group_ind in range(num_group):
+    for group_ind in tqdm(range(num_group)):
         # prepare batch (currently supports only 1 batch)
         image_list = []
         shift_amount_list = []
@@ -528,9 +528,11 @@ def predict(
     durations_in_seconds["slice"] = 0
 
     input_type_str = "video frames" if source_is_video else "images"
-    for ind, image_path in enumerate(
-        tqdm(image_iterator, f"Performing inference on {input_type_str}", total=num_frames)
-    ):
+
+    #for ind, image_path in enumerate(
+    #    tqdm(image_iterator, f"Performing inference on {input_type_str}", total=num_frames)
+    #):
+    for ind, image_path in enumerate(image_iterator):
         # get filename
         if source_is_video:
             video_name = Path(source).stem

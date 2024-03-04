@@ -12,6 +12,8 @@ from sahi.utils.cv import (
     get_bool_mask_from_coco_segmentation,
     get_coco_segmentation_from_bool_mask,
 )
+
+from sahi.utils.polygon import binary_mask_to_polygon
 from sahi.utils.shapely import ShapelyAnnotation
 
 try:
@@ -540,6 +542,7 @@ class ObjectAnnotation:
         self,
         bbox: Optional[List[int]] = None,
         bool_mask: Optional[np.ndarray] = None,
+        polygon: Optional[np.ndarray] = None, # added
         category_id: Optional[int] = None,
         category_name: Optional[str] = None,
         shift_amount: Optional[List[int]] = [0, 0],
@@ -551,6 +554,8 @@ class ObjectAnnotation:
                 [minx, miny, maxx, maxy]
             bool_mask: np.ndarray with bool elements
                 2D mask of object, should have a shape of height*width
+            polygon: np.ndarray with x,y coordinates
+                2D array of polygon coordinates, should have a shape of [N, 2]
             category_id: int
                 ID of the object category
             category_name: str
@@ -573,14 +578,26 @@ class ObjectAnnotation:
                 shift_amount=shift_amount,
                 full_shape=full_shape,
             )
-            bbox_from_bool_mask = get_bbox_from_bool_mask(bool_mask)
+            #bbox_from_bool_mask = get_bbox_from_bool_mask(bool_mask)
             # https://github.com/obss/sahi/issues/235
-            if bbox_from_bool_mask is not None:
-                bbox = bbox_from_bool_mask
-            else:
-                raise ValueError("Invalid boolean mask.")
+            # I don't understand, this is getting overwritten below
+            # does not make any sense and it leads to error sometimes
+            #if bbox_from_bool_mask is not None:
+            #    bbox = bbox_from_bool_mask
+            #else:
+            #    np.save("D:/tmp/tmp/bool_mask.pickle", bool_mask) # debugging
+            #    raise ValueError("Invalid boolean mask.")
         else:
             self.mask = None
+
+        if polygon is not None:
+            self.polygon = Polygon(
+                polygon=polygon,
+                shift_amount=shift_amount)
+        else:
+            self.polygon = Polygon(
+                polygon=None,
+                shift_amount=shift_amount)
 
         # if bbox is a numpy object, convert it to python List[float]
         if type(bbox).__module__ == "numpy":
@@ -718,3 +735,30 @@ class ObjectAnnotation:
     bbox: {self.bbox},
     mask: {self.mask},
     category: {self.category}>"""
+
+class Polygon:
+    """
+    Polygon coordinates of the annotation.
+    """
+
+    def __init__(self, polygon=None, shift_amount: List[int] = [0, 0]):
+        """
+        Args:
+            bool_mask: np.ndarray with bool elements
+                2D mask of object, should have a shape of height*width
+            shift_amount: List[int]
+                To shift the box and mask predictions from sliced image
+                to full sized image, should be in the form of [shift_x, shift_y]
+        """
+        self.shift_x = shift_amount[0]
+        self.shift_y = shift_amount[1]
+        self.xy_coord = polygon
+
+    def get_shifted_polygon(self):
+        if self.xy_coord is not None:
+            shifted_polygon = np.stack([self.xy_coord[:, 0] + self.shift_x, self.xy_coord[:, 1] + self.shift_y], axis=-1)
+        else:
+            shifted_polygon = None
+        return shifted_polygon
+
+
